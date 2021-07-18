@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\mist.h" />
+    <ClInclude Include="ranges.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\tester.c" />

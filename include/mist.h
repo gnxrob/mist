@@ -1,341 +1,348 @@
-#ifndef _MIST_H
-#define _MIST_H
-
-// This code is NOT yet multithread safe; future revisions
-// will place mutexes around bag and frame (de)allocations
+#include <stdio.h>
 
 // For booleans and the standard-width integers
 #include <stdint.h>
 #include <stdbool.h>
 
-// Helpful constants
-#define MIST_MAX_BAGS        (size_t)16
-#define MIST_BASE_BAG        (size_t)0
-#define MIST_START_FRAME     (size_t)0x100000000
-#define MIST_MAX_BAG_ALLOC   (size_t)0x100000000
-
-// This should be the hardware page size; future revisions
-// will query the host os for this information
-#define MIST_FRAME_SIZE       0x1000
-
-// Macros to quickly align up or down on a given value for page allocation routines
-#define UDIV_UP(A, B)        ((((size_t)A) + ((size_t)B) - 1ULL) / ((size_t)B))
-#define ALIGN_UP(A, B)       (UDIV_UP((size_t)A, (size_t)B) * ((size_t)B))
-#define ALIGN_DOWN(A, B)     (A - (A % B))
-
-// Future potential for a rudimentary ASLR
-#undef MIST_USE_RANDOM
-
 // undef for POSIX
 #define MIST_OS_WINDOWS
+
+// undef for no verbose debug
+#undef MIST_VERBOSE_DEBUG
 
 // Include the VirtualAlloc or mmap/munmap header as appropriate
 #ifdef MIST_OS_WINDOWS
 #include <windows.h>
 #include <memoryapi.h>
-#include <strsafe.h>
-
-// For reporting Windows errors, courtesy Microsoft online example
-void ErrorExit(LPTSTR lpszFunction) 
-{ 
-    // Retrieve the system error message for the last-error code
-
-    LPVOID lpMsgBuf;
-    LPVOID lpDisplayBuf;
-    DWORD dw = GetLastError(); 
-
-    FormatMessage(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | 
-        FORMAT_MESSAGE_FROM_SYSTEM |
-        FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        dw,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPTSTR) &lpMsgBuf,
-        0, NULL );
-
-    // Display the error message and exit the process
-
-    lpDisplayBuf = (LPVOID)LocalAlloc(LMEM_ZEROINIT, 
-        (lstrlen((LPCTSTR)lpMsgBuf) + lstrlen((LPCTSTR)lpszFunction) + 40) * sizeof(TCHAR)); 
-    StringCchPrintf((LPTSTR)lpDisplayBuf, 
-        LocalSize(lpDisplayBuf) / sizeof(TCHAR),
-        TEXT("%s failed with error %d: %s"), 
-        lpszFunction, dw, lpMsgBuf); 
-    MessageBox(NULL, (LPCTSTR)lpDisplayBuf, TEXT("Error"), MB_OK); 
-
-    LocalFree(lpMsgBuf);
-    LocalFree(lpDisplayBuf);
-    ExitProcess(dw); 
-}
-
 #else
 #include <sys/mman.h>
 #endif
 
-// Pointer to Struct Init Function
-bool (*struct_init_fn)(void* struct_init_struct);
+// Macros to quickly align up or down on a given value for page allocation routines
+#define UDIV_UP(A, B)         ((((size_t)A) + ((size_t)B) - 1ULL) / ((size_t)B))
+#define ALIGN_UP(A, B)        (UDIV_UP((size_t)A, (size_t)B) * ((size_t)B))
+#define ALIGN_DOWN(A, B)      (A - (A % B))
+
+// Helpful constants
+#define MIST_MAX_BAGS         (size_t)32
+#define MIST_ACCTG_BAG        (size_t)0
+#define MIST_FRAME_SIZE       ((size_t)0x1000)
+#define MIST_START_FRAME      ((size_t)0x200000000)
+#define MIST_MAX_BAG_ALLOC    ((size_t)0x100000000)
+
+
+
+// Common return values
+#define MIST_OK               ((int)0)
+#define MIST_NULLPTR_RETURNED ((int)-1)
+#define MIST_ERROR            ((int)-2)
 
 // Bump Allocator
 typedef struct {
-  uint16_t type_alignment; // for < MIST_FRAME_SIZE types 
-  uint16_t type_width; // for < MIST_FRAME_SIZE types
-  size_t aligned_type_width; // Do it to it yo
-  uint8_t* bump_ptr; // for bump allocation (current pointer)
+    uint16_t align; // for < MIST_FRAME_SIZE types 
+    uint16_t width; // for < MIST_FRAME_SIZE types
+    size_t aligned_width; // Do it to it yo
+    uint8_t* current_ptr; // for bump allocation (current pointer)
 } mist_allocator_t;
 
 // Bag (frame collection)
 typedef struct {
-  uint8_t* base_page_ptr; // base pointer to frame 0
-  size_t page_size; // pages can be MIST_FRAME_SIZE to a max of (pages per cacheline) pages as a multiple of MIST_FRAME_SIZE
-  size_t max_frames; // maximum number of frames for this bag; if 0, then it defaults to MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE
-  size_t allocated_frames; // how many pages have been allocated
-  size_t bag_index; // the index within the bag_manager of this bag (this index' purpose is as a back referencing index)
-  mist_allocator_t allocator; // All bags have a bump allocator, even if it's not used
+    uint8_t* bag_base_ptr; // base pointer to frame 0
+    size_t max_frames; // maximum number of frames for this bag; if 0, then it defaults to MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE
+    size_t frames; // how many pages have been allocated
+    mist_allocator_t alloc; // All bags have a bump allocator, even if it's not used
+    bool init;
 } mist_bag_t;
 
 // Bag Manager
 typedef struct {
-  mist_bag_t bags[MIST_MAX_BAGS]; // bags
-  size_t current_bag; // what is the "current" bag (for allocating the next bag)
+    mist_bag_t bag[MIST_MAX_BAGS]; // bags
+    size_t current_bag; // what is the "current" bag (for allocating the next bag)
 } mist_manager_t;
 
 // Local Library Management Variables
 mist_manager_t mist_manager; // manages the bags
-int8_t* next_major_bag_alloc_loc = (int8_t*)MIST_START_FRAME; // where do we put the bags in the VAS
+uint8_t* next_major_alloc_ptr = (uint8_t*)MIST_START_FRAME; // where do we put the bags in the VAS
 
-// Find the frame index given a bag index and a pointer
-inline size_t MistCalculateIndex(size_t mist_bag_index, uint8_t* pointer);
+                                                            // Quick Macros
+#define MCB    mist_manager.current_bag
+#define MBI    mist_bag_index
+#define MQBI   mist_manager.bag[MBI]
+#define MQCBI  mist_manager.bag[MCB]
+
+                                                            // Helpful macros
+#define MIST_CURRENT_FRAME_BASE(PTR)     ((size_t)ALIGN_DOWN((size_t)PTR, MIST_FRAME_SIZE))
+#define MIST_NEXT_FRAME_BASE(PTR)        ((size_t)(MIST_CURRENT_FRAME_BASE(PTR) + (size_t)MIST_FRAME_SIZE))
+#define MIST_NTH_FRAME_BASE(PTR, N)      ((size_t)(MIST_CURRENT_FRAME_BASE(PTR) + ((size_t)MIST_FRAME_SIZE * ((size_t)N))))
+
+                                                            // Function Definitions
+
+                                                            // Find the frame index given a bag index and a pointer
 inline size_t MistCalculateIndex(size_t mist_bag_index, uint8_t* pointer) {
-  uint8_t* current_base_frame = (uint8_t*)ALIGN_DOWN((size_t)pointer, MIST_FRAME_SIZE);
-  size_t xdiff = current_base_frame - mist_manager.bags[mist_bag_index].base_page_ptr;
-  return xdiff / MIST_FRAME_SIZE;
-}
-
-// Zeros out the given frame -- should be noted that this can be very destructive
-void MistZeroFrame(size_t mist_bag_index, size_t mist_frame_index);
-void MistZeroFrame(size_t mist_bag_index, size_t mist_frame_index) {
-  uint8_t* bp = mist_manager.bags[mist_bag_index].base_page_ptr + (mist_frame_index * MIST_FRAME_SIZE);
-  
-  for (size_t i = 0; i < MIST_FRAME_SIZE; i++) {
-      *bp++ = (uint8_t)0;
-  }
-}
-
-// Allocate the next frame on a given bag
-void* MistAllocateFrame(size_t mist_bag_index);
-void* MistAllocateFrame(size_t mist_bag_index) {
-  // Make sure not exceeding a self-imposed page limit
-  if (mist_manager.bags[mist_bag_index].allocated_frames == mist_manager.bags[mist_bag_index].max_frames)
-    return NULL;
-
-  // Find the base pointer
-  uint8_t* bp = (uint8_t*)mist_manager.bags[mist_bag_index].base_page_ptr;
-
-// Allocate a new frame at the end of the currently allocated frameset
-#ifdef MIST_OS_WINDOWS
-  VirtualAlloc((LPVOID)((bp + 
-    ((mist_manager.bags[mist_bag_index].allocated_frames) * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, 0, 0);
-#else
-  mmap((void*)((bp + 
-    ((mist_manager.bags[mist_bag_index].allocated_frames) * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, NULL, NULL, NULL, 0);
+    // Make sure we are initialized
+    if (!MQBI.init) {
+#ifdef MIST_VERBOSE_DEBUG
+        printf("Attempt to calculate an index on an uninitialized bag\n");
 #endif
-  MistZeroFrame(mist_bag_index, mist_manager.bags[mist_bag_index].allocated_frames);
-  mist_manager.bags[mist_bag_index].allocated_frames += 1;
-  
+        return 0;
+    }
 
-  // Return a pointer to the first size_t in the newly allocated frame
-  return (bp + 
-    ((mist_manager.bags[mist_bag_index].allocated_frames - 1) * MIST_FRAME_SIZE));
+    uint8_t* frame_base = (uint8_t*)MIST_CURRENT_FRAME_BASE(pointer);
+    size_t xdiff = ((size_t)frame_base - (size_t)MQBI.bag_base_ptr);
+#ifdef MIST_VERBOSE_DEBUG
+    printf("Returning %lld from MistCalculateIndex(%lld, %p), frame_base = 0x%llx, xdiff = %lld\n", (xdiff / MIST_FRAME_SIZE), mist_bag_index, pointer, frame_base, xdiff);
+#endif
+    return (xdiff / MIST_FRAME_SIZE);
 }
 
-// Allocate a specifiec frame on a given bag - buyer beware
-// does no tracking; does not increment allocated count -- 
-// should really only use this to grow pages down from the end of the VAS
-bool MistAllocateSpecificFrame(size_t mist_bag_index, size_t mist_frame_index);
-bool MistAllocateSpecificFrame(size_t mist_bag_index, size_t mist_frame_index) {
-  // Make sure not exceeding a self-imposed page limit
-  if (mist_manager.bags[mist_bag_index].allocated_frames == mist_manager.bags[mist_bag_index].max_frames)
-    return false;
+#define MIST_FRAME_INDEX(INDEX, PTR)     (MistCalculateIndex(INDEX, PTR))
 
-  // Find the base Pointer
-  uint8_t* bp = mist_manager.bags[mist_bag_index].base_page_ptr;
-
-// Allocate the specified frame, but do not increment allocation counters
-#ifdef MIST_OS_WINDOWS
-  VirtualAlloc((LPVOID)((bp + 
-    (mist_frame_index * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, 0, 0);
-#else
-  mmap((void*)((bp + 
-    (mist_frame_index * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, NULL, NULL, NULL, 0);
+// Zero the specified area of memory (CAREFUL, CAREFUL)
+int MistZeroMem(uint8_t* frame_base_ptr, size_t sz) {
+#ifdef MIST_VERBOSE_DEBUG
+    printf("Zeroing Memory from frame_base_ptr = 0x%llx, sz = %lld\n", frame_base_ptr, sz);
 #endif
-  MistZeroFrame(mist_bag_index, mist_frame_index);
+    for (size_t z = 0; z < sz; z++) {
+        *frame_base_ptr++ = '\0';
+    }
 
-  // Let everyone know we succeeded
-  return true;
+    return MIST_OK;
+}
+inline void MistZeroFrame(size_t mist_bag_index, size_t mist_frame_index) {
+    // Make sure we are initialized
+    if (!MQBI.init) {
+#ifdef MIST_VERBOSE_DEBUG
+        printf("Returning from MistZeroFrame(%lld, %lld) because the bag at this index is not initialized\n", mist_bag_index, mist_frame_index);
+#endif
+        return;
+    }
+
+    uint8_t* framebase = MQBI.bag_base_ptr + (mist_frame_index * MIST_FRAME_SIZE);
+
+#ifdef MIST_VERBOSE_DEBUG
+    printf("Attempting to zero from framebase 0x%llx, frame_index = %lld\n", framebase, mist_frame_index);
+#endif
+    for (size_t i = 0; i < MIST_FRAME_SIZE; i++) {
+        *framebase++ = (uint8_t)0;
+    }
+}
+
+// Commit field ignored on POSIX
+int MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool commit, bool exec) {
+#ifdef MIST_OS_WINDOWS
+    DWORD dFlags = 0;
+    if (reserve) dFlags = MEM_RESERVE;
+    if (commit) dFlags |= MEM_COMMIT;
+
+    DWORD dProt = 0;
+    if (exec) dProt = PAGE_EXECUTE_READWRITE; else dProt = PAGE_READWRITE;
+
+    void* result = VirtualAlloc((LPVOID)(frame_base_ptr), sz, dFlags, dProt);
+#ifdef MIST_VERBOSE_DEBUG
+    printf("Calling VirtualAlloc(0x%llx, %lld, %d, %d), reserve = 0x%x, commit = 0x%x, exec = 0x%x\n", frame_base_ptr, sz, dFlags, dProt, reserve, commit, exec);
+    printf("VirtualAlloc result = 0x%llx\n", result);
+#endif
+    if (result == NULL) {
+        printf("NULL returned when allocating 0x%llx\n", (uint64_t)frame_base_ptr);
+        return MIST_NULLPTR_RETURNED;
+    }
+
+#else
+    int iFlags = 0;
+    if (!reserve) iFlags |= MAP_NORESERVE;
+    int iProt = PROT_READ | PROT_WRITE;
+    if (exec) iProt |= PROT_EXEC;
+
+    void* result = mmap((void*)(frame_base_ptr), sz, iProt, iFlags, NULL, 0);
+#endif
+    if (result == NULL) {
+        return MIST_NULLPTR_RETURNED;
+    }
+    else {
+#ifdef MIST_VERBOSE_DEBUG
+        printf("Returning MIST_OK from MistMemMapFrame()\n");
+#endif
+        return MIST_OK;
+    }
+}
+
+int MistMemUnMapFrame(uint8_t* frame_base_ptr) {
+    // Allocate a new frame at the end of the currently allocated frameset
+#ifdef MIST_OS_WINDOWS
+    void* var = VirtualAlloc((LPVOID)(frame_base_ptr), MIST_FRAME_SIZE, MEM_RESET | MEM_COMMIT, 0);
+
+    if (var == NULL) {
+        printf("NULL returned when deallocating 0x%llx\n", (uint64_t)frame_base_ptr);
+        return MIST_NULLPTR_RETURNED;
+    }
+
+#else
+    munmap((void*)(new_addr), MIST_FRAME_SIZE);
+#endif
+    return MIST_OK;
 }
 
 // Init the MIST manager
-bool MistInit();
-bool MistInit() {
-  // Ensure no double init
-  static bool init = false;
-  if (init) return false;
+int MistInit() {
+    // Ensure no double init
+    static bool init = false;
+    if (init) return MIST_ERROR;
 
-  // Configure the base bag (0) with params for bookeeping and allocate a single frame
-  mist_manager.current_bag = MIST_BASE_BAG;
-  mist_manager.bags[mist_manager.current_bag].page_size = MIST_FRAME_SIZE;
-  mist_manager.bags[mist_manager.current_bag].max_frames = (size_t)(MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE);
-  
-  // VirtualAlloc on Windows, mmap() on Linux / POSIX
-#ifdef MIST_OS_WINDOWS
-  mist_manager.bags[mist_manager.current_bag].base_page_ptr = (uint8_t*)VirtualAlloc((LPVOID)next_major_bag_alloc_loc, MIST_FRAME_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    // Configure the base bag (0) with params for bookeeping and allocate a single frame
+    mist_manager.current_bag = 0;
+    MQCBI.max_frames = (size_t)(MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE);
 
-  // Make sure we actually received VAS
-  if (mist_manager.bags[mist_manager.current_bag].base_page_ptr == NULL) {
-    ErrorExit(TEXT("VirtualAlloc"));
-  }
-#else
-  mist_manager.bags[mist_manager.current_bag].base_page_ptr = (uint8_t*)mmap((void*)next_major_bag_alloc_loc, MIST_FRAME_SIZE, NULL, NULL, NULL, 0);
-#endif
-  mist_manager.bags[mist_manager.current_bag].allocated_frames = 1;
-  
-  // Set the location of the next major bag allocation in the VMA
-  next_major_bag_alloc_loc += MIST_MAX_BAG_ALLOC;
-  
-  // We are now initialized; Elvii has left the building...
-  init = true;
-  return true;
+    // Forecefully map the genesis frame for our accounting block
+
+    // Allocate our first data area, which is to reserve the full space,
+    // but generally not commit at this juncture
+    int result = MistMemMapFrame(next_major_alloc_ptr, MIST_MAX_BAG_ALLOC, true, false, false);
+    // Make sure we actually received VAS
+    if (result != MIST_OK) {
+        printf("Call to allocate genesis frame on default bag returned NULL\n");
+        return result;
+    }
+
+    int result2 = MistMemMapFrame(next_major_alloc_ptr, MIST_FRAME_SIZE, false, true, false);
+    // Make sure the VAS commit was successful
+    if (result2 != MIST_OK) {
+        printf("Call to commit genesis frame on default bag returned NULL\n");
+        return result2;
+    }
+
+    // Bookeeping
+    MQCBI.bag_base_ptr = next_major_alloc_ptr;
+    MQCBI.frames = 1;
+
+    // Set the location of the next major bag allocation in the VMA
+    next_major_alloc_ptr += MIST_MAX_BAG_ALLOC;
+
+    // We are now initialized; Elvii has left the building...
+    init = true;
+    return MIST_OK;
 }
 
 // Allocate the next bag
-size_t MistAllocateBag(size_t max_pages, uint16_t type_align, uint16_t type_width);
-size_t MistAllocateBag(size_t max_pages, uint16_t type_align, uint16_t type_width) {
-  // Make sure not last
-  if ((mist_manager.current_bag + 1) > MIST_MAX_BAGS) return 0;
-  
-  // Safe to increment the index
-  mist_manager.current_bag++;
+int MistAllocateBag(size_t max_frames, uint16_t type_width, uint16_t type_align) {
+    // Make sure not last
+    if ((mist_manager.current_bag + 1) > MIST_MAX_BAGS) return 0;
 
-  // Defaults
-  if (max_pages == 0) max_pages = (MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE);
-  
-  // Set up this bag and its first frame
-  mist_manager.bags[mist_manager.current_bag].page_size = MIST_FRAME_SIZE;
-  mist_manager.bags[mist_manager.current_bag].max_frames = (size_t)max_pages;
-#ifdef MIST_OS_WINDOWS
-  mist_manager.bags[mist_manager.current_bag].base_page_ptr = (uint8_t*)VirtualAlloc((LPVOID)next_major_bag_alloc_loc, MIST_FRAME_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#else
-  mist_manager.bags[mist_manager.current_bag].base_page_ptr = (uint8_t*)mmap((void*)next_major_bag_alloc_loc, MIST_FRAME_SIZE, NULL, NULL, NULL, 0);
-  
-#endif
-  mist_manager.bags[mist_manager.current_bag].allocated_frames = 1;
-  mist_manager.bags[mist_manager.current_bag].bag_index = mist_manager.current_bag;
+    // Safe to increment the index
+    mist_manager.current_bag++;
 
-  // Allocator properties
-  mist_manager.bags[mist_manager.current_bag].allocator.bump_ptr = (uint8_t*)next_major_bag_alloc_loc;
-  mist_manager.bags[mist_manager.current_bag].allocator.type_alignment = type_align;
-  mist_manager.bags[mist_manager.current_bag].allocator.type_width = type_width;
-  mist_manager.bags[mist_manager.current_bag].allocator.aligned_type_width = ALIGN_UP(type_width, type_align);
+    // Defaults
+    if (max_frames == 0) max_frames = (MIST_MAX_BAG_ALLOC / MIST_FRAME_SIZE);
 
-  // Pre-set where the next major allocation location
-  // will occur within the VMA
-  next_major_bag_alloc_loc += MIST_MAX_BAG_ALLOC;
+    // Set up this bag and its first frame
+    MQCBI.init = false;
+    MQCBI.max_frames = max_frames;
+    int result = MistMemMapFrame(next_major_alloc_ptr, MIST_MAX_BAG_ALLOC, true, false, false);
 
-  // Which index is this bag?
-  return mist_manager.current_bag;
+    if (result != MIST_OK) {
+        printf("NULL returned when attempting to allocate but not commit frame #0 of a new bag\n");
+        return MIST_NULLPTR_RETURNED;
+    }
+
+    int result2 = MistMemMapFrame(next_major_alloc_ptr, MIST_FRAME_SIZE, false, true, false);
+
+    if (result != MIST_OK) {
+        printf("NULL returned when attempting to commit frame #0 of a new bag\n");
+        return MIST_NULLPTR_RETURNED;
+    }
+
+    MQCBI.bag_base_ptr = next_major_alloc_ptr;
+
+    MQCBI.frames = 1;
+
+    // Allocator properties
+    MQCBI.alloc.current_ptr = MQCBI.bag_base_ptr;
+    MQCBI.alloc.align = type_align;
+    MQCBI.alloc.width = type_width;
+    MQCBI.alloc.aligned_width = ALIGN_UP(type_width, type_align);
+
+    // Pre-set where the next major allocation location
+    // will occur within the VMA
+    next_major_alloc_ptr += MIST_MAX_BAG_ALLOC;
+
+    // We are done
+    MQCBI.init = true;
+
+    // Which index is this bag?
+    return (int)mist_manager.current_bag;
+}
+
+// Allocate a new frame
+void* MistAllocateFrame(size_t mist_bag_index) {
+    // Make sure not exceeding a self-imposed page limit
+    if (MQBI.frames + 1 > MQBI.max_frames) return NULL;
+
+    // Find the base pointer & the next frame's base pointer
+    uint8_t* bp = (uint8_t*)MIST_CURRENT_FRAME_BASE(MQBI.alloc.current_ptr);
+    uint8_t* next_bp = (uint8_t*)(MIST_NEXT_FRAME_BASE(bp));
+
+    // Allocate a new frame at the end of the currently allocated frameset
+    int var = MistMemMapFrame(next_bp, MIST_FRAME_SIZE, false, true, false);
+
+    if (var != MIST_OK) {
+        printf("Unable to allocate frame at next_bp %p\n", next_bp);
+        return NULL;
+    }
+
+    MistZeroFrame(mist_bag_index, MQBI.frames);
+    MQBI.frames += 1;
+
+    // Return a pointer to the first size_t in the newly allocated frame
+    return (void*)next_bp;
 }
 
 // Bump Allocate a new size on a given bag
-void* MistNew(size_t mist_bag_index, size_t allocation_size);
 void* MistNew(size_t mist_bag_index, size_t allocation_size) {
-  if (allocation_size != 0 && mist_manager.bags[mist_bag_index].allocator.aligned_type_width > 0) return NULL;
-  if (allocation_size == 0) allocation_size = mist_manager.bags[mist_bag_index].allocator.aligned_type_width;
-  
-  uint8_t* next_bump_loc = mist_manager.bags[mist_bag_index].allocator.bump_ptr + allocation_size;
-  size_t next_bump_index = MistCalculateIndex(mist_bag_index, next_bump_loc);
-  size_t current_bump_index = MistCalculateIndex(mist_bag_index, mist_manager.bags[mist_bag_index].allocator.bump_ptr);
-  void* retptr = NULL;
+    if (!MQBI.init) return NULL;
 
-  // See where we fall with this next bump, w.r.t. frame boundaries
-  // We are in the same frame after the allocation, so no new frames
-  if (next_bump_index == current_bump_index) {
-    retptr = mist_manager.bags[mist_bag_index].allocator.bump_ptr;
-    mist_manager.bags[mist_bag_index].allocator.bump_ptr = next_bump_loc;    
-    return retptr;
-  }
-  
-  // We are more than 1 frame ahead of the current frame, so allocate as 
-  // appropriate
-  retptr = MistAllocateFrame(mist_bag_index);
-  if ((next_bump_index - current_bump_index) > 1) {
-    for (size_t z = 0; z < (next_bump_index - current_bump_index - 1); z++) {
-        MistAllocateFrame(mist_bag_index);
-    }  
-  }
+    if (allocation_size != 0 && MQBI.alloc.aligned_width > 0) return NULL;
+    if (allocation_size != 0) allocation_size = (size_t)ALIGN_UP(allocation_size, (size_t)MQBI.alloc.aligned_width);
+    if (allocation_size == 0) allocation_size = MQBI.alloc.aligned_width;
 
-  return retptr;
-}
+    uint8_t* next_bump_loc = MQBI.alloc.current_ptr + allocation_size;
+    size_t current_bump_index = MIST_FRAME_INDEX(mist_bag_index, MQBI.alloc.current_ptr);
+    size_t next_bump_index = MIST_FRAME_INDEX(mist_bag_index, next_bump_loc);
+    if ((size_t)next_bump_loc >= (ALIGN_DOWN((size_t)next_bump_loc, MIST_FRAME_SIZE) + MIST_FRAME_SIZE) && next_bump_index == 0) return NULL;
 
-bool MistApplyInitFn(size_t mist_bag_index, void* start_ptr, size_t count, bool (*struct_init_fn)(void* struct_init_struct));
-
-// De-Allocates the Last Frame in the given bag
-bool MistDeAllocateLastFrame(size_t mist_bag_index);
-bool MistDeAllocateLastFrame(size_t mist_bag_index) {
-  // Make sure this is not the last (first) frame;
-  // If it is, we can safely DeAllocate
-  if (mist_manager.bags[mist_bag_index].allocated_frames == 1) return false;
-
-  // Base pointer
-  uint8_t* bp = mist_manager.bags[mist_bag_index].base_page_ptr;
-
-// Call VirtualAlloc / munmap with the necessary flags to unmap the last page mapped
-#ifdef MIST_OS_WINDOWS
-  VirtualAlloc((LPVOID)((bp + 
-    ((mist_manager.bags[mist_bag_index].allocated_frames - 1) * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, MEM_RESET, 0);
-    MistZeroFrame(mist_bag_index, mist_manager.bags[mist_bag_index].allocated_frames - 1);
-#else
-  munmap((void*)((bp + 
-    ((mist_manager.bags[mist_bag_index].allocated_frames - 1) * MIST_FRAME_SIZE))),
-    MIST_FRAME_SIZE);
+#ifdef MIST_VERBOSE_DEBUG
+    printf("In MistNew(%lld) allocation_size = %lld, next_bump_loc = 0x%llx, next_bump_index = %lld, current_bump_index = %lld\n", mist_bag_index, allocation_size, next_bump_loc, next_bump_index, current_bump_index);
 #endif
-  // Update our count and return true
-  mist_manager.bags[mist_bag_index].allocated_frames -= 1;
-  return true;
-}
+    uint8_t* retptr = NULL;
 
-// Allocate a specifiec frame on a given bag - buyer beware
-// does no tracking; does not increment allocated count -- 
-// should really only use this to grow pages down from the end of the VAS
-bool MistDeAllocateSpecificFrame(size_t mist_bag_index, size_t mist_frame_index);
-bool MistDeAllocateSpecificFrame(size_t mist_bag_index, size_t mist_frame_index) {
-  // Sanity
-  if (mist_bag_index == 0 || mist_frame_index == 0) return false;
-
-  // Make sure not exceeding a self-imposed page limit
-  if (mist_manager.bags[mist_bag_index].allocated_frames == 1)
-    return false;
-
-  // Find the base Pointer
-  uint8_t* bp = mist_manager.bags[mist_bag_index].base_page_ptr;
-
-// Allocate the specified frame, but do not increment allocation counters
-#ifdef MIST_OS_WINDOWS
-  VirtualAlloc((LPVOID)((bp + 
-    (mist_frame_index * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE, MEM_RESET, 0);
-#else
-  munmap((void*)((bp + 
-    (mist_frame_index * MIST_FRAME_SIZE))), 
-    MIST_FRAME_SIZE);
+    // See where we fall with this next bump, w.r.t. frame boundaries
+    // We are in the same frame after the allocation, so no new frames
+    if (next_bump_index == current_bump_index) {
+        retptr = MQBI.alloc.current_ptr;
+        MQBI.alloc.current_ptr = next_bump_loc;  
+#ifdef MIST_VERBOSE_DEBUG
+        printf("Returning from MistNew() after allocating no frames\n");
 #endif
-  // Let everyone know we succeeded
-  return true;
-}
+        return retptr;
+    }
 
+    // We are more than 1 frame ahead of the current frame, so allocate as 
+    // appropriate
+    retptr = (uint8_t*)MistAllocateFrame(mist_bag_index);
+    size_t alloc_count = next_bump_index - current_bump_index;
+    if ((alloc_count) > 1) {
+        for (size_t z = 0; z < (alloc_count - 1); z++) {
+            uint8_t* ptrval = (uint8_t*)MistAllocateFrame(mist_bag_index);
+            if (ptrval == NULL) {
+                printf("Failure allocating subsequent frame at 0x%llx\n", (uint64_t)ptrval);
+                return NULL;
+            }
+        }  
+    }
+
+    MQBI.alloc.current_ptr = next_bump_loc;
+
+#ifdef MIST_VERBOSE_DEBUG
+    printf("Returning from MistNew(), alloc_count = %lld, retptr = 0x%llx\n", alloc_count, retptr);
 #endif
+
+    return (void*)retptr;
+}
