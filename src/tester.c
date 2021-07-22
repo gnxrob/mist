@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
         return -4;
     }
 
-    size_t z = NULL;
+    size_t z = 0;
 
     printf("Bag #1 is at b.p. %p (Frame Size: %llu, Max Frames: %llu, Type Width: %u, Type Align: %u, Aligned Width: %u)\n", bag1.base_ptr, bag1.frame_size, bag1.max_frames, bag1.alloc.width, bag1.alloc.align, bag1.alloc.aligned_width);
     printf("Bag #2 is at b.p. %p (Frame Size: %llu, Max Frames: %llu, Type Width: %u, Type Align: %u, Aligned Width: %u)\n", bag2.base_ptr, bag2.frame_size, bag2.max_frames, bag2.alloc.width, bag2.alloc.align, bag2.alloc.aligned_width);

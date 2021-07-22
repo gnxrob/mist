@@ -68,17 +68,13 @@ int MistInit();
 inline extern size_t MistCalculateIndex(mist_bag_t *bag, uint8_t* pointer);
 inline extern size_t MistGetOSPageSize();
 
-int MistZeroMem(uint8_t* frame_base_ptr, size_t sz);
-inline extern void MistZeroFrame(size_t mist_bag_index, size_t mist_frame_index);
+int _MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool commit, bool exec);
 
 mist_bag_t MistNewBag(size_t frame_size, size_t max_frames, uint16_t type_width, uint16_t type_align);
+int MistFreeBag(mist_bag_t *bag);
 
-int _MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool commit, bool exec);
-int _MistMemUnMapFrame(mist_bag_t *bag, uint8_t* frame_base_ptr);
-
-int MistAllocateBag(size_t max_frames, uint16_t type_width, uint16_t type_align);
 void* MistAllocateFrame(mist_bag_t *bag);
-void* MistNew(size_t mist_bag_index, size_t allocation_size);
+void* MistNew(mist_bag_t *bag, size_t allocation_size);
 
 // Find the frame index given a bag pointer and a pointer
 inline size_t MistCalculateIndex(mist_bag_t *bag, uint8_t* pointer) {
@@ -111,8 +107,9 @@ inline size_t MistGetOSPageSize() {
 
     page_size = si.dwAllocationGranularity;
 #elif !defined(MIST_OS_WINDOWS)
-    page_size = getpagesize();
+    page_size = getpagesize();    
 #endif
+    return page_size;
 }
 
 #define MIST_FRAME_INDEX(BAG, PTR)     (MistCalculateIndex(BAG, PTR))
@@ -167,23 +164,6 @@ int _MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool comm
 #endif
         return MIST_OK;
     }
-}
-
-// Unmaps the specified frame
-int _MistMemUnMapFrame(mist_bag_t *bag, uint8_t* frame_base_ptr) {
-    // Allocate a new frame at the end of the currently allocated frameset
-#ifdef MIST_OS_WINDOWS
-    void* var = VirtualAlloc((LPVOID)(frame_base_ptr), bag->frame_size, MEM_RESET | MEM_COMMIT, 0);
-
-    if (var == NULL) {
-        printf("NULL returned when deallocating 0x%lx\n", (uint64_t)frame_base_ptr);
-        return MIST_NULLPTR_RETURNED;
-    }
-
-#else
-    munmap((void*)(frame_base_ptr), bag->frame_size);
-#endif
-    return MIST_OK;
 }
 
 // Construct a new bag to store memory -- this does not allocate or build a pointer;
@@ -245,6 +225,23 @@ mist_bag_t MistNewBag(size_t frame_size, size_t max_frames, uint16_t type_width,
 en_fuego:
     newbag.base_ptr = NULL;
     return newbag;
+}
+
+// Frees the pages used by the specified bag
+int MistFreeBag(mist_bag_t *bag) {
+    // Allocate a new frame at the end of the currently allocated frameset
+#ifdef MIST_OS_WINDOWS
+    void* var = VirtualAlloc((LPVOID)(bag->base_ptr), bag->max_frames * bag->frame_size, MEM_RESET | MEM_COMMIT, 0);
+
+    if (var == NULL) {
+        printf("NULL returned when deallocating 0x%lx\n", (uint64_t)bag->base_ptr);
+        return MIST_NULLPTR_RETURNED;
+    }
+
+#else
+    munmap((void*)(bag->base_ptr), bag->max_frames * bag->frame_size);
+#endif
+    return MIST_OK;
 }
 
 // Init the MIST manager
