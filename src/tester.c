@@ -1,6 +1,8 @@
 #include "../include/mist.h"
 #include <stdio.h>
 
+#undef TESTER_VERBOSE_DEBUG
+
 typedef struct twelvebyte { uint64_t b8; uint32_t b4; } twelvebyte_t;
 
 uint64_t* pointers64[0x4000];
@@ -45,6 +47,11 @@ int main(int argc, char* argv[]) {
             printf("Null pointer returned on pointers64! 0x%lx at index %lu\n", pointers64[z], z);
             break;
         }
+#ifdef TESTER_VERBOSE_DEBUG
+        else {
+            printf("Assigning new uint64_t pointer at 0x%llx at index %lu\n", pointers64[z], z);
+        }
+#endif
         *(pointers64[z]) = (uint64_t)z;
 
         pointers32[z] = (uint32_t*)MistNew(&bag2, 0);
@@ -52,16 +59,24 @@ int main(int argc, char* argv[]) {
             printf("Null pointer returned on pointers32! 0x%lx at index %lu\n", pointers32[z], z);
             break;
         }
+#ifdef TESTER_VERBOSE_DEBUG
+        else {
+            printf("Assigning new uint32_t pointer at 0x%llx at index %lu\n", pointers32[z], z);
+        }
+#endif
         *(pointers32[z]) = (uint32_t)z;
 
 
-        uint8_t* mem_loc = (uint8_t*)MistNew(&bag3, 0);
-        pointers12byte[z] = (twelvebyte_t*)mem_loc;
+        pointers12byte[z] = (twelvebyte_t*)MistNew(&bag3, 0);
         if (pointers12byte[z] == NULL) {
             printf("Null pointer returned! 0x%lx at index %lu\n", pointers12byte[z], z);
             break;
         }
-
+#ifdef TESTER_VERBOSE_DEBUG
+        else {
+            printf("Assigning new twelvebyte_t pointer at index %lu\n", z);
+        }
+#endif
         twelvebyte_t temp12;
         temp12.b8 = (uint64_t)(0xDEADBEEF + (uint64_t)z);
         temp12.b4 = (uint32_t)(0xDEEDDEED);
@@ -77,9 +92,6 @@ int main(int argc, char* argv[]) {
             z, pointers12byte[z], (pointers12byte[z] == NULL) ? 0, 0 : (((twelvebyte_t*)pointers12byte[z])->b8), (((twelvebyte_t*)pointers12byte[z])->b4));
     }
 
-    printf("Clearing bag %p, frame %d\n", &bag1, 0);
-    MistZeroFrame(&bag1, 0);
-
     for (z = 0; z < 10; z++) {
 
         printf("pointers64 loc[%lu] == (0x%p) 0x%lx pointers32 loc[%lu] == (0x%p) 0x%lx pointers12byte loc[%lu] == (0x%p) .b8 == 0x%lx, .b4 == 0x%x\n", 
@@ -88,7 +100,7 @@ int main(int argc, char* argv[]) {
             z, pointers12byte[z], (pointers12byte[z] == NULL) ? 0, 0 : (((twelvebyte_t*)pointers12byte[z])->b8), (((twelvebyte_t*)pointers12byte[z])->b4));
     }
 
-    for (z = 0x3FFF; z > 0x3FF5; z--) {
+    for (z = 0x3FF5; z < 0x4000; z++) {
 
         printf("pointers64 loc[%lu] == (0x%p) 0x%lx pointers32 loc[%lu] == (0x%p) 0x%lx pointers12byte loc[%lu] == (0x%p) .b8 == 0x%lx, .b4 == 0x%x\n", 
             z, pointers64[z], (pointers64[z] == NULL) ? 0 : *(pointers64[z]), 

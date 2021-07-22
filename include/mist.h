@@ -11,7 +11,7 @@
 #define MIST_OS_WINDOWS
 
 // undef for no verbose debug
-#define MIST_VERBOSE_DEBUG
+#undef MIST_VERBOSE_DEBUG
 
 // Include the VirtualAlloc or mmap/munmap header as appropriate
 #ifdef MIST_OS_WINDOWS
@@ -117,40 +117,6 @@ inline size_t MistGetOSPageSize() {
 
 #define MIST_FRAME_INDEX(BAG, PTR)     (MistCalculateIndex(BAG, PTR))
 
-// Zero the specified area of memory (CAREFUL, CAREFUL!)
-int MistZeroMem(uint8_t* frame_base_ptr, size_t sz) {
-#ifdef MIST_VERBOSE_DEBUG
-    printf("Zeroing Memory from frame_base_ptr = 0x%lx, sz = %llu\n", frame_base_ptr, sz);
-#endif
-    for (size_t z = 0; z < sz; z++) {
-        *frame_base_ptr++ = '\0';
-    }
-
-    return MIST_OK;
-}
-
-// Zero the specified frame index of the specified bag
-inline void MistZeroFrame(mist_bag_t *bag, size_t mist_frame_index) {
-    if (bag == NULL) return;
-
-    // Make sure we are initialized
-    if (!bag->init) {
-#ifdef MIST_VERBOSE_DEBUG
-        printf("Returning from MistZeroFrame(%p, %llu) because the bag at this index is not initialized\n", bag, mist_frame_index);
-#endif
-        return;
-    }
-
-    uint8_t* framebase = bag->base_ptr + (mist_frame_index * bag->frame_size);
-
-#ifdef MIST_VERBOSE_DEBUG
-    printf("Attempting to zero from framebase 0x%llx, frame_index = %llu\n", framebase, mist_frame_index);
-#endif
-    for (size_t i = 0; i < bag->frame_size; i++) {
-        *framebase++ = (uint8_t)0;
-    }
-}
-
 // Commit field ignored on POSIX
 int _MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool commit, bool exec) {
 
@@ -176,7 +142,7 @@ int _MistMemMapFrame(uint8_t* frame_base_ptr, size_t sz, bool reserve, bool comm
 #ifdef MIST_VERBOSE_DEBUG
     printf("Calling VirtualAlloc(0x%lx, %llu, %d, %d), reserve = 0x%x, commit = 0x%x, exec = 0x%x\n", \
         frame_base_ptr, sz, dFlags, dProt, reserve, commit, exec);
-    printf("VirtualAlloc result = 0x%lx\n", result);
+    printf("VirtualAlloc result = 0x%llx\n", result);
 #endif
     if (result == MIST_BAD_ALLOC) {
         printf("MIST_BAD_ALLOC returned when allocating 0x%lx in _MistMemMapFrame() - Windows\n", (uint64_t)frame_base_ptr);
@@ -340,7 +306,7 @@ void* MistNew(mist_bag_t *bag, size_t allocation_size) {
     if (!bag->init) return NULL;
 
     if (allocation_size != 0 && bag->alloc.aligned_width > 0) return NULL;
-    if (allocation_size != 0) allocation_size = (size_t)ALIGN_UP(allocation_size, (size_t)bag->alloc.aligned_width);
+    if (allocation_size != 0) allocation_size = (size_t)ALIGN_UP(allocation_size, (size_t)bag->alloc.align);
     if (allocation_size == 0) allocation_size = bag->alloc.aligned_width;
 
     // Is the next bump going to be on a subsequent frame?
@@ -353,28 +319,27 @@ void* MistNew(mist_bag_t *bag, size_t allocation_size) {
     
     // A next_bump_index of zero indicates a calculation issue, so if this is not the very
     // first frame, return a NULL reference because we did not safely secure a memory location
-    if ((size_t)next_bump_loc >= (ALIGN_DOWN((size_t)next_bump_loc, bag->frame_size) + bag->frame_size) && next_bump_index == 0) return NULL;
+    if ((size_t)next_bump_loc > (ALIGN_DOWN((size_t)next_bump_loc, bag->frame_size) + bag->frame_size) && next_bump_index == 0) return NULL;
 
 #ifdef MIST_VERBOSE_DEBUG
     printf("In MistNew(%p) allocation_size = %lu, next_bump_loc = 0x%lx, next_bump_index = %lu, current_bump_index = %lu\n", \
         bag, allocation_size, next_bump_loc, next_bump_index, current_bump_index);
 #endif
-    uint8_t* retptr = NULL;
+    size_t retptr = (size_t)bag->alloc.current_ptr;
 
     // See where we fall with this next bump, w.r.t. frame boundaries
     // If we are in the same frame after the allocation, no new frames to alloc
     if (next_bump_index == current_bump_index) {
-        retptr = bag->alloc.current_ptr;
         bag->alloc.current_ptr = next_bump_loc;  
 #ifdef MIST_VERBOSE_DEBUG
         printf("Returning from MistNew() after allocating no frames\n");
 #endif
-        return retptr;
+        return (void*)retptr;
     }
 
     // We are 1 frame or more ahead of the current frame, so allocate as 
     // appropriate
-    retptr = (uint8_t*)MistAllocateFrame(bag);
+    next_bump_loc = (uint8_t*)MistAllocateFrame(bag);
     size_t alloc_count = next_bump_index - current_bump_index;
     if ((alloc_count) > 1) {
         for (size_t z = 0; z < (alloc_count - 1); z++) {
@@ -390,7 +355,7 @@ void* MistNew(mist_bag_t *bag, size_t allocation_size) {
     bag->alloc.current_ptr = next_bump_loc;
 
 #ifdef MIST_VERBOSE_DEBUG
-    printf("Returning from MistNew(), alloc_count = %lu, retptr = 0x%lx\n", alloc_count, retptr);
+    printf("Returning from MistNew(), alloc_count = %lu, retptr = 0x%llx\n", alloc_count, retptr);
 #endif
 
     return (void*)retptr;
